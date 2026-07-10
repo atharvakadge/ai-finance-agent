@@ -1,0 +1,10 @@
+# Web framework
+fastapi==0.115.0
+uvicorn==0.30.6           # ASGI server - actually runs the FastAPI app
+
+#LLM
+groq==0.25.0              # Groq API client (runs Llama, Qwen, etc.)
+
+# Configuration
+pydantic-settings==2.5.2  # Loads .env files into typed Python objects
+python-dotenv==1.0.1      # Reads .env files
