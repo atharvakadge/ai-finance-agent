@@ -1,197 +1,185 @@
 """
-PDF Processing Service - Extracts and chunks text from PDF documents.
-
-This is Step 1 of our RAG pipeline:
-    PDF → Extract text → Split into chunks → (next: embed and store)
-
-Why a separate service?
-- Single Responsibility: this file ONLY handles PDF processing
-- The LLM service doesn't need to know about PDFs
-- The vector DB service (coming next) doesn't need to know about PDFs
-- Each service does ONE job well
+PDF Processing Service - Extracts text with section detection.
 """
 
-import fitz  # PyMuPDF - imported as 'fitz' for historical reasons
+import re
+import fitz
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 class PDFService:
-    """Handles PDF text extraction and chunking."""
 
-    def __init__(
-        self,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
-    ):
-        """
-        Initialize the PDF service.
-
-        Args:
-            chunk_size: Max characters per chunk.
-                - Too small (200): loses context, chunks are meaningless
-                - Too big (5000): embeddings become vague, retrieval is imprecise
-                - Sweet spot (1000): enough context, focused meaning
-
-            chunk_overlap: Characters shared between consecutive chunks.
-                - Prevents important info from being split across chunks
-                - 200 chars ≈ 1-2 sentences of overlap
-                - Too much overlap = duplicate data, wasted storage
-                - Too little = risk losing context at boundaries
-        """
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            # What does 'separators' mean?
-            # The splitter tries to split at the FIRST separator that works.
-            # It tries "\n\n" (paragraph breaks) first - best split point.
-            # If a chunk is still too big, it tries "\n" (line breaks).
-            # Then ". " (sentences), then " " (words), then "" (characters).
-            # This is the "recursive" part - it cascades through separators.
             separators=["\n\n", "\n", ". ", " ", ""],
-            length_function=len,  # measure chunk size by character count
+            length_function=len,
         )
 
-    def extract_text_from_pdf(self, pdf_path: str) -> str:
-        """
-        Extract all text from a PDF file.
+        # Section markers found in Indian annual reports
+        self.section_markers = {
+            "consolidated": [
+                "consolidated financial statements",
+                "consolidated statement of profit and loss",
+                "consolidated balance sheet",
+                "consolidated cash flow",
+            ],
+            "standalone": [
+                "standalone financial statements",
+                "standalone statement of profit and loss",
+                "standalone balance sheet",
+            ],
+            "management": [
+                "management discussion and analysis",
+                "management discussion & analysis",
+                "directors' report",
+                "director's report",
+            ],
+            "chairman": [
+                "chairman's letter",
+                "chairman and managing director",
+                "letter to shareholders",
+            ],
+            "segment": [
+                "segment reporting",
+                "segment information",
+                "business segment",
+            ],
+            "overview": [
+                "financial highlights",
+                "performance highlights",
+                "at a glance",
+                "key highlights",
+            ],
+        }
 
-        Args:
-            pdf_path: Path to the PDF file on disk
-
-        Returns:
-            All text from the PDF as a single string
-
-        How PyMuPDF works:
-        - Opens the PDF and reads it page by page
-        - Extracts text while preserving reading order
-        - Handles multi-column layouts better than most libraries
-        - Returns plain text (no formatting, no images)
-        """
-        doc = fitz.open(pdf_path)
-        text = ""
-
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            text += page.get_text()
-
-        doc.close()
-        return text
-
-    def extract_text_from_bytes(self, pdf_bytes: bytes) -> str:
-        """
-        Extract text from PDF bytes (for file uploads via API).
-
-        When a user uploads a PDF through the API, we receive
-        raw bytes, not a file path. This method handles that.
-
-        Args:
-            pdf_bytes: Raw PDF file content as bytes
-
-        Returns:
-            All text from the PDF as a single string
-        """
-        # stream=pdf_bytes tells PyMuPDF to read from memory, not disk
-        # filetype="pdf" tells it to expect PDF format
+    def extract_text_from_bytes(self, pdf_bytes: bytes) -> list[dict]:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        text = ""
+        pages = []
 
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
-            text += page.get_text()
+            text = page.get_text("text", sort=True)
+            table_text = self._extract_tables_from_page(page)
+
+            combined = text
+            if table_text:
+                combined += "\n\n[TABLE DATA]\n" + table_text
+
+            if combined.strip():
+                pages.append({
+                    "text": combined,
+                    "page": page_num + 1,
+                })
 
         doc.close()
-        return text
+        return pages
 
-    def chunk_text(self, text: str) -> list[dict]:
+    def _extract_tables_from_page(self, page) -> str:
+        try:
+            tables = page.find_tables()
+            if not tables or len(tables.tables) == 0:
+                return ""
+
+            table_texts = []
+            for table in tables:
+                data = table.extract()
+                if not data:
+                    continue
+
+                rows = []
+                for row in data:
+                    cleaned = [str(cell).strip() if cell else "" for cell in row]
+                    if any(c for c in cleaned):
+                        rows.append(" | ".join(cleaned))
+
+                if rows:
+                    table_texts.append("\n".join(rows))
+
+            return "\n\n".join(table_texts)
+        except Exception:
+            return ""
+
+    def _detect_section(self, text: str, current_section: str) -> str:
         """
-        Split text into overlapping chunks for RAG.
+        Detect which section of the annual report this text belongs to.
 
-        Args:
-            text: The full document text
-
-        Returns:
-            List of chunk dictionaries, each containing:
-            - 'content': the chunk text
-            - 'chunk_index': position in the document (0, 1, 2, ...)
-            - 'char_start': starting character position in original text
-
-        Why return dicts instead of just strings?
-        - We need metadata for each chunk (position, source page, etc.)
-        - When the user asks a question and we retrieve a chunk,
-          we need to tell them WHERE in the document it came from
-        - This is how citations work in RAG
+        Scans for section markers and returns the section name.
+        If no marker found, inherits the current section (because
+        pages within a section don't repeat the header).
         """
-        # create_documents expects a list of texts
-        # It returns LangChain Document objects
-        documents = self.text_splitter.create_documents([text])
+        text_lower = text.lower()
 
+        for section_name, markers in self.section_markers.items():
+            for marker in markers:
+                if marker in text_lower:
+                    return section_name
+
+        return current_section
+
+    def chunk_text(self, pages: list[dict]) -> list[dict]:
         chunks = []
-        for i, doc in enumerate(documents):
-            chunks.append({
-                "content": doc.page_content,
-                "chunk_index": i,
-            })
+        chunk_index = 0
+        current_section = "unknown"
+
+        for page_data in pages:
+            page_num = page_data["page"]
+            text = page_data["text"]
+
+            # Detect section from page content
+            current_section = self._detect_section(text, current_section)
+
+            documents = self.text_splitter.create_documents([text])
+
+            for doc in documents:
+                chunks.append({
+                    "content": doc.page_content,
+                    "chunk_index": chunk_index,
+                    "page": page_num,
+                    "section": current_section,
+                })
+                chunk_index += 1
 
         return chunks
 
     def process_pdf(self, pdf_path: str = None, pdf_bytes: bytes = None) -> list[dict]:
-        """
-        Complete pipeline: PDF → text → chunks.
-
-        This is the main method other services will call.
-        Give it a PDF (path or bytes), get back chunks ready for embedding.
-
-        Args:
-            pdf_path: Path to PDF file (for local files)
-            pdf_bytes: Raw PDF bytes (for uploads)
-            One of these must be provided.
-
-        Returns:
-            List of chunk dicts ready for the next step (embedding)
-        """
-        # Validate input - one of the two must be provided
         if pdf_path is None and pdf_bytes is None:
             raise ValueError("Either pdf_path or pdf_bytes must be provided")
 
-        # Step 1: Extract text
-        if pdf_path:
-            raw_text = self.extract_text_from_pdf(pdf_path)
+        if pdf_bytes:
+            pages = self.extract_text_from_bytes(pdf_bytes)
         else:
-            raw_text = self.extract_text_from_bytes(pdf_bytes)
+            doc = fitz.open(pdf_path)
+            pages = []
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                text = page.get_text("text", sort=True)
+                table_text = self._extract_tables_from_page(page)
+                combined = text
+                if table_text:
+                    combined += "\n\n[TABLE DATA]\n" + table_text
+                if combined.strip():
+                    pages.append({"text": combined, "page": page_num + 1})
+            doc.close()
 
-        # Step 2: Basic cleaning
-        # Annual reports have lots of extra whitespace, repeated headers, etc.
-        cleaned_text = self._clean_text(raw_text)
+        cleaned_pages = []
+        for page_data in pages:
+            cleaned_pages.append({
+                "text": self._clean_text(page_data["text"]),
+                "page": page_data["page"],
+            })
 
-        # Step 3: Chunk the text
-        chunks = self.chunk_text(cleaned_text)
-
+        chunks = self.chunk_text(cleaned_pages)
         return chunks
 
     def _clean_text(self, text: str) -> str:
-        """
-        Basic text cleaning for financial documents.
-
-        Why clean?
-        - PDFs have weird spacing from column layouts
-        - Headers/footers repeat on every page
-        - Extra whitespace wastes tokens and hurts embeddings
-        """
-        # Replace multiple newlines with double newline (paragraph break)
-        import re
         text = re.sub(r"\n{3,}", "\n\n", text)
-
-        # Replace multiple spaces with single space
         text = re.sub(r" {2,}", " ", text)
-
-        # Remove very short lines (likely headers/footers/page numbers)
         lines = text.split("\n")
         cleaned_lines = []
         for line in lines:
             stripped = line.strip()
-            # Keep lines that have meaningful content (more than 5 chars)
-            # Very short lines are usually page numbers, headers, etc.
-            if len(stripped) > 5 or stripped == "":
+            if len(stripped) > 3 or stripped == "":
                 cleaned_lines.append(line)
-
         return "\n".join(cleaned_lines)

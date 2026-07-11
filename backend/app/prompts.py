@@ -45,12 +45,14 @@ Be precise with formulas. A wrong formula in finance is dangerous.
 
 RAG_QUERY_PROMPT = """Use the following context from the company's annual report to answer the question.
 
-IMPORTANT FORMATTING RULES:
+IMPORTANT RULES:
 - Start with a direct 1-2 sentence answer
 - Use bullet points for key data points
 - Bold important numbers
-- Keep it concise — no more than 300 words unless the question demands detail
+- Keep it concise — under 300 words
 - If the context doesn't have enough info, say what's missing
+- CRITICAL: Annual reports contain MULTIPLE revenue figures (standalone, consolidated, segment-level). Always identify and use the CONSOLIDATED company-level total. Look for "Consolidated Statement of Profit and Loss" or "Revenue from Operations" under consolidated financials. Standalone or segment figures will be lower — do NOT use those as total revenue.
+- If you see conflicting numbers, list all of them and label each (standalone vs consolidated vs segment)
 
 ## Context from Annual Report:
 {context}
