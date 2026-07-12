@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import chat, upload, query, documents, compare
+from app.api.routes import chat, upload, query, documents, compare, financial_tools, news, agent
 from app.services.rag_service import RAGService
 
 
@@ -42,6 +42,9 @@ app.include_router(upload.router, prefix="/api/v1", tags=["Documents"])
 app.include_router(query.router, prefix="/api/v1", tags=["RAG Query"])
 app.include_router(documents.router, prefix="/api/v1", tags=["Documents Management"])
 app.include_router(compare.router, prefix="/api/v1", tags=["Compare"])
+app.include_router(financial_tools.router, prefix="/api/v1", tags=["Financial Tools"])
+app.include_router(news.router, prefix="/api/v1", tags=["News"])
+app.include_router(agent.router, prefix="/api/v1", tags=["Agent"])
 
 
 @app.get("/")
