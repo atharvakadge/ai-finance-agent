@@ -9,17 +9,22 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import chat, upload, query, documents, compare, financial_tools, news, agent
 from app.services.rag_service import RAGService
+from app.logging_config import setup_logging, get_logger
+
+setup_logging(level="INFO")
+logger = get_logger("main")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Loading AI models... (this takes ~30 seconds on first run)")
+    logger.info("Starting FinLens AI server...")
+    logger.info("Loading AI models (this takes ~30 seconds on first run)")
     app.state.rag_service = RAGService()
-    print("Models loaded. Server ready.")
+    logger.info("Models loaded. Server ready.")
 
     yield
 
-    print("Shutting down...")
+    logger.info("Shutting down FinLens AI server.")
 
 
 app = FastAPI(

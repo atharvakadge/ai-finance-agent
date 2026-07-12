@@ -1,0 +1,44 @@
+# Docker Compose orchestrates multiple containers.
+# Right now we have one service (backend).
+# In production you'd add: qdrant (persistent), postgres, redis, nginx.
+
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+    volumes:
+      # Mount uploads directory so PDFs persist across restarts
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# Future additions:
+#  qdrant:
+#    image: qdrant/qdrant:latest
+#    ports:
+#      - "6333:6333"
+#    volumes:
+#      - qdrant_data:/qdrant/storage
+#
+#  postgres:
+#    image: postgres:16
+#    environment:
+#      POSTGRES_DB: finlens
+#      POSTGRES_USER: finlens
+#      POSTGRES_PASSWORD: ${DB_PASSWORD}
+#    volumes:
+#      - postgres_data:/var/lib/postgresql/data
