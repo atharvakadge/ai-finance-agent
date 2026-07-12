@@ -7,8 +7,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import chat, upload, query, documents, compare, financial_tools, news, agent
+from app.api.routes import chat, upload, query, documents, compare, financial_tools, news, agent, history
 from app.services.rag_service import RAGService
+from app.database import init_db
 from app.logging_config import setup_logging, get_logger
 
 setup_logging(level="INFO")
@@ -18,6 +19,11 @@ logger = get_logger("main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting FinLens AI server...")
+
+    logger.info("Initializing database...")
+    init_db()
+    logger.info("Database ready.")
+
     logger.info("Loading AI models (this takes ~30 seconds on first run)")
     app.state.rag_service = RAGService()
     logger.info("Models loaded. Server ready.")
@@ -50,6 +56,7 @@ app.include_router(compare.router, prefix="/api/v1", tags=["Compare"])
 app.include_router(financial_tools.router, prefix="/api/v1", tags=["Financial Tools"])
 app.include_router(news.router, prefix="/api/v1", tags=["News"])
 app.include_router(agent.router, prefix="/api/v1", tags=["Agent"])
+app.include_router(history.router, prefix="/api/v1", tags=["History & Analytics"])
 
 
 @app.get("/")

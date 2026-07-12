@@ -1,10 +1,5 @@
 """
 Application configuration.
-
-Loads settings from environment variables (defined in .env file).
-Uses pydantic-settings for validation - if a required variable
-is missing, the app crashes at startup with a clear error
-instead of failing mysteriously later.
 """
 
 from pydantic_settings import BaseSettings
@@ -17,6 +12,9 @@ class Settings(BaseSettings):
 
     # LLM Settings
     llm_model: str = "qwen/qwen3.6-27b"
+
+    # Database
+    database_url: str = "sqlite:///./finlens.db"
 
     # App Settings
     app_env: str = "development"
